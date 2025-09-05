@@ -1,9 +1,11 @@
-// UPDATED 2025-08-19
+// UPDATED 2025-09-05
 // Saves CSV to an accessible folder named "Log_Data" on internal storage when possible.
-// Sensors: accelerometer, gyroscope, magnetometer (via sensors_plus). No barometer.
+// Sensors: accelerometer, gyroscope, magnetometer, linear accelerometer (userAcc), gravity (computed), orientation (pitch/roll/yaw computed).
+// Pressure column is included but left blank unless a pressure plugin is later added.
 // Falls back to app-specific directory if creating /storage/emulated/0/Log_Data fails.
 
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -21,7 +23,7 @@ class IMUApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Telemetry Collector v5',
+      title: 'Telemetry Collector v7',
       theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.blueGrey),
       home: const TelemetryHomePage(),
     );
@@ -43,15 +45,21 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
 
   // ===== Sensor subscriptions =====
   StreamSubscription<AccelerometerEvent>? _accSub;
+  StreamSubscription<UserAccelerometerEvent>? _userAccSub; // linear acceleration
   StreamSubscription<GyroscopeEvent>? _gyroSub;
   StreamSubscription<MagnetometerEvent>? _magSub;
   Timer? _sampler; // periodic sampler to enforce target Hz
   Timer? _windowTimer; // flush window every 10s
 
   // ===== Last sensor readings =====
-  AccelerometerEvent? _lastAcc;
-  GyroscopeEvent? _lastGyro;
-  MagnetometerEvent? _lastMag;
+  AccelerometerEvent? _lastAcc;           // includes gravity
+  UserAccelerometerEvent? _lastUserAcc;   // linear acceleration (gravity removed)
+  GyroscopeEvent? _lastGyro;              // angular velocity (rad/s)
+  MagnetometerEvent? _lastMag;            // magnetic field (µT)
+
+  // Computed
+  List<double>? _lastGravity; // gx, gy, gz (m/s^2), computed as acc - userAcc
+  List<double>? _lastOrient;  // yaw (azimuth), pitch, roll in degrees
 
   // ===== UI / state =====
   bool _isRecording = false;
@@ -72,7 +80,12 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
 
   // Attach to sensor streams (high-rate). We'll sample them at _selectedHz via Timer
   void _attachRawStreams() {
-    _accSub = accelerometerEventStream().listen((e) => _lastAcc = e);
+    _accSub = accelerometerEventStream().listen((e) {
+      _lastAcc = e;
+    });
+    _userAccSub = userAccelerometerEventStream().listen((e) {
+      _lastUserAcc = e;
+    });
     _gyroSub = gyroscopeEventStream().listen((e) => _lastGyro = e);
     _magSub = magnetometerEventStream().listen((e) => _lastMag = e);
   }
@@ -101,7 +114,7 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
         }
         dirPath = folder.path;
       } else {
-        // Other platforms (desktop): use Downloads/Log_Data if available
+        // Other platforms (desktop): use Documents/Log_Data
         final base = await getApplicationDocumentsDirectory();
         final folder = Directory('${base.path}/Log_Data');
         if (!(await folder.exists())) await folder.create(recursive: true);
@@ -160,8 +173,15 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
 
     // Write header once
     final header = 'timestamp_iso,session_ms,window_idx,sample_idx_in_window,'
-        'acc_x,acc_y,acc_z,gyro_x,gyro_y,gyro_z,mag_x,mag_y,mag_z,label';
-    await _csvFile!.writeAsString('$header\n', mode: FileMode.write, flush: true);
+        'acc_x,acc_y,acc_z,'
+        'useracc_x,useracc_y,useracc_z,'
+        'gravity_x,gravity_y,gravity_z,'
+        'gyro_x,gyro_y,gyro_z,'
+        'mag_x,mag_y,mag_z,'
+        'yaw_deg,pitch_deg,roll_deg,'
+        'pressure_hpa,'
+        'label';
+    await _csvFile!.writeAsString('$header', mode: FileMode.write, flush: true);
 
     _buffer.clear();
     _sessionStart = DateTime.now();
@@ -190,8 +210,8 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
   }
 
   void _onSampleTick(Timer t) {
-    // If we don't have all sensor values yet, skip this tick
-    if (_lastAcc == null || _lastGyro == null || _lastMag == null) {
+    // Need all base sensors incl. linear acceleration
+    if (_lastAcc == null || _lastGyro == null || _lastMag == null || _lastUserAcc == null) {
       return;
     }
 
@@ -199,8 +219,48 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
     final sessionMs = _sessionStart == null ? 0 : now.difference(_sessionStart!).inMilliseconds;
 
     final acc = _lastAcc!;
+    final uacc = _lastUserAcc!;
     final gyr = _lastGyro!;
     final mag = _lastMag!;
+
+    // Compute gravity = acc - userAcc (best effort)
+    final gx = acc.x - uacc.x;
+    final gy = acc.y - uacc.y;
+    final gz = acc.z - uacc.z;
+    _lastGravity = [gx, gy, gz];
+
+    // Compute orientation (yaw, pitch, roll) using acc & mag (tilt-compensated heading)
+    final ax = acc.x, ay = acc.y, az = acc.z;
+    // Normalize accel
+    final an = math.sqrt(ax*ax + ay*ay + az*az);
+    final axn = an == 0 ? 0.0 : ax / an;
+    final ayn = an == 0 ? 0.0 : ay / an;
+    final azn = an == 0 ? 0.0 : az / an;
+
+    // Roll & pitch from accelerometer
+    final roll = math.atan2(ayn, azn);
+    final pitch = math.atan2(-axn, math.sqrt(ayn*ayn + azn*azn));
+
+    // Magnetometer tilt compensation
+    final mx = mag.x, my = mag.y, mz = mag.z;
+    final sinRoll = math.sin(roll), cosRoll = math.cos(roll);
+    final sinPitch = math.sin(pitch), cosPitch = math.cos(pitch);
+    final mx2 = mx * cosPitch + mz * sinPitch;
+    final my2 = mx * sinRoll * sinPitch + my * cosRoll - mz * sinRoll * cosPitch;
+    final yaw = math.atan2(-my2, mx2); // azimuth
+
+    // Convert to degrees and wrap to [-180,180]
+    double toDeg(num r) => r * 180.0 / math.pi;
+    double wrap180(double d) {
+      var x = d;
+      while (x <= -180) x += 360;
+      while (x > 180) x -= 360;
+      return x;
+    }
+    final yawDeg = wrap180(toDeg(yaw));
+    final pitchDeg = wrap180(toDeg(pitch));
+    final rollDeg = wrap180(toDeg(roll));
+    _lastOrient = [yawDeg, pitchDeg, rollDeg];
 
     final sampleIdx = _buffer.length; // index within current 10s window
 
@@ -212,12 +272,22 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
       acc.x.toStringAsFixed(6),
       acc.y.toStringAsFixed(6),
       acc.z.toStringAsFixed(6),
+      uacc.x.toStringAsFixed(6),
+      uacc.y.toStringAsFixed(6),
+      uacc.z.toStringAsFixed(6),
+      gx.toStringAsFixed(6),
+      gy.toStringAsFixed(6),
+      gz.toStringAsFixed(6),
       gyr.x.toStringAsFixed(6),
       gyr.y.toStringAsFixed(6),
       gyr.z.toStringAsFixed(6),
       mag.x.toStringAsFixed(6),
       mag.y.toStringAsFixed(6),
       mag.z.toStringAsFixed(6),
+      yawDeg.toStringAsFixed(3),
+      pitchDeg.toStringAsFixed(3),
+      rollDeg.toStringAsFixed(3),
+      '', // pressure_hpa (optional plugin to fill later)
       _label.replaceAll(',', ' '),
     ].join(',');
 
@@ -260,6 +330,7 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
     _sampler?.cancel();
     _windowTimer?.cancel();
     _accSub?.cancel();
+    _userAccSub?.cancel();
     _gyroSub?.cancel();
     _magSub?.cancel();
     super.dispose();
@@ -327,34 +398,25 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
               children: [
                 _SensorCard(
                   title: 'Accelerometer (m/s²)',
-                  values: _lastAcc == null
-                      ? null
-                      : [
-                          _lastAcc!.x,
-                          _lastAcc!.y,
-                          _lastAcc!.z,
-                        ],
+                  values: _lastAcc == null ? null : [_lastAcc!.x, _lastAcc!.y, _lastAcc!.z],
+                ),
+                _SensorCard(
+                  title: 'Linear Acc (m/s²)',
+                  values: _lastUserAcc == null ? null : [_lastUserAcc!.x, _lastUserAcc!.y, _lastUserAcc!.z],
+                ),
+                _SensorCard(
+                  title: 'Gravity (m/s²)',
+                  values: _lastGravity == null ? null : [_lastGravity![0], _lastGravity![1], _lastGravity![2]],
                 ),
                 _SensorCard(
                   title: 'Gyroscope (rad/s)',
-                  values: _lastGyro == null
-                      ? null
-                      : [
-                          _lastGyro!.x,
-                          _lastGyro!.y,
-                          _lastGyro!.z,
-                        ],
+                  values: _lastGyro == null ? null : [_lastGyro!.x, _lastGyro!.y, _lastGyro!.z],
                 ),
                 _SensorCard(
                   title: 'Magnetometer (µT)',
-                  values: _lastMag == null
-                      ? null
-                      : [
-                          _lastMag!.x,
-                          _lastMag!.y,
-                          _lastMag!.z,
-                        ],
+                  values: _lastMag == null ? null : [_lastMag!.x, _lastMag!.y, _lastMag!.z],
                 ),
+                _OrientCard(values: _lastOrient),
               ],
             ),
             const SizedBox(height: 12),
@@ -389,9 +451,39 @@ class _SensorCard extends StatelessWidget {
               const SizedBox(height: 8),
               Text(values == null
                   ? '—'
-                  : 'x: ${values![0].toStringAsFixed(4)}\n'
-                    'y: ${values![1].toStringAsFixed(4)}\n'
+                  : 'x: ${values![0].toStringAsFixed(4)}'
+                    'y: ${values![1].toStringAsFixed(4)}'
                     'z: ${values![2].toStringAsFixed(4)}'),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _OrientCard extends StatelessWidget {
+  final List<double>? values; // yaw, pitch, roll (deg)
+  const _OrientCard({required this.values});
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      elevation: 1,
+      child: Padding(
+        padding: const EdgeInsets.all(12.0),
+        child: SizedBox(
+          width: 260,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Orientation (°)', style: TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              Text(values == null
+                  ? '—'
+                  : 'yaw: ${values![0].toStringAsFixed(1)}'
+                    'pitch: ${values![1].toStringAsFixed(1)}'
+                    'roll: ${values![2].toStringAsFixed(1)}'),
             ],
           ),
         ),
