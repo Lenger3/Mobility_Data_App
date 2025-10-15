@@ -1,5 +1,5 @@
 // UPDATED 2025-10-15
-// Saves CSV directly to file without windowing/buffering.
+// Saves CSV directly to file and includes a share button for the last recorded file.
 // Sensors: accelerometer, gyroscope, magnetometer, linear accelerometer (userAcc), gravity (computed), orientation (pitch/roll/yaw computed).
 // Pressure column is included but left blank unless a pressure plugin is later added.
 // Falls back to app-specific directory if creating /storage/emulated/0/Log_Data fails.
@@ -11,6 +11,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:share_plus/share_plus.dart';
 
 void main() {
   runApp(const IMUApp());
@@ -23,7 +25,7 @@ class IMUApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Telemetry Collector v8 (Direct Write)',
+      title: 'Telemetry Collector v9 (Shareable)',
       theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.blueGrey),
       home: const TelemetryHomePage(),
     );
@@ -68,15 +70,23 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
   File? _csvFile;
   IOSink? _sink; // File sink for direct writing
   String? _fixedDirPath; // resolved save directory path
+  String? _lastRecordedFilePath; // To enable the share button
 
   @override
   void initState() {
     super.initState();
+    _requestStoragePermission(); // Request permission on start
     _attachRawStreams();
     _resolveSaveDirectory();
   }
 
-  // Attach to sensor streams (high-rate). We'll sample them at _selectedHz via Timer
+  Future<void> _requestStoragePermission() async {
+    var status = await Permission.storage.status;
+    if (!status.isGranted) {
+      await Permission.storage.request();
+    }
+  }
+
   void _attachRawStreams() {
     _accSub = accelerometerEventStream().listen((e) {
       _lastAcc = e;
@@ -88,8 +98,6 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
     _magSub = magnetometerEventStream().listen((e) => _lastMag = e);
   }
 
-  /// Try to use an accessible public-like path on Android: /storage/emulated/0/Log_Data
-  /// If not possible, fall back to app-specific directory (Documents or external files).
   Future<void> _resolveSaveDirectory() async {
     String? dirPath;
     try {
@@ -104,7 +112,6 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
         await probe.delete();
         dirPath = public.path;
       } else if (Platform.isIOS) {
-        // iOS: use app Documents (visible via Files app under app container)
         final docs = await getApplicationDocumentsDirectory();
         final folder = Directory('${docs.path}/Log_Data');
         if (!(await folder.exists())) {
@@ -112,14 +119,12 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
         }
         dirPath = folder.path;
       } else {
-        // Other platforms (desktop): use Documents/Log_Data
         final base = await getApplicationDocumentsDirectory();
         final folder = Directory('${base.path}/Log_Data');
         if (!(await folder.exists())) await folder.create(recursive: true);
         dirPath = folder.path;
       }
     } catch (_) {
-      // Fallback to app-specific external (Android) or Documents (others)
       try {
         if (Platform.isAndroid) {
           final ext = await getExternalStorageDirectory();
@@ -133,7 +138,6 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
           dirPath = folder.path;
         }
       } catch (e) {
-        // Last resort: app temp
         final tmp = await getTemporaryDirectory();
         final folder = Directory('${tmp.path}/Log_Data');
         if (!(await folder.exists())) await folder.create(recursive: true);
@@ -151,6 +155,11 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
   Future<void> _startRecording() async {
     if (_isRecording) return;
 
+    // Reset last file path to disable share button for the new session
+    setState(() {
+      _lastRecordedFilePath = null;
+    });
+
     if (_fixedDirPath == null) {
       await _resolveSaveDirectory();
       if (_fixedDirPath == null) {
@@ -163,17 +172,14 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
       }
     }
 
-    // Prepare CSV file with timestamp & label in name
     final ts = DateTime.now().toIso8601String().replaceAll(':', '-');
     final safeLabel =
         _label.trim().isEmpty ? 'unlabeled' : _label.trim().replaceAll(' ', '_');
     final path = '$_fixedDirPath/telemetry_${safeLabel}_$ts.csv';
     _csvFile = File(path);
 
-    // Open a sink for writing
     _sink = _csvFile!.openWrite(mode: FileMode.write);
 
-    // Write header once
     final header = 'timestamp_iso,session_ms,sample_idx,'
         'acc_x,acc_y,acc_z,'
         'useracc_x,useracc_y,useracc_z,'
@@ -188,7 +194,6 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
     _sessionStart = DateTime.now();
     _sampleIndex = 0;
 
-    // Start sampler for target Hz
     final intervalMs = (1000 / _selectedHz).round();
     _sampler = Timer.periodic(
       Duration(milliseconds: intervalMs),
@@ -203,16 +208,39 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
 
     _sampler?.cancel();
 
-    // Flush and close the file sink
     await _sink?.flush();
     await _sink?.close();
     _sink = null;
 
-    setState(() => _isRecording = false);
+    // Update state to enable the share button with the correct file path
+    setState(() {
+      _isRecording = false;
+      _lastRecordedFilePath = _csvFile?.path;
+    });
+  }
+
+  Future<void> _shareLastFile() async {
+    if (_lastRecordedFilePath == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Paylaşılacak bir dosya bulunmuyor.')),
+      );
+      return;
+    }
+    try {
+      final fileToShare = XFile(_lastRecordedFilePath!);
+      await Share.shareXFiles(
+        [fileToShare],
+        text: 'Toplanan Telemetri Verisi: ${fileToShare.name}',
+      );
+    } catch (e) {
+      print('Dosya paylaşılırken hata oluştu: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Dosya paylaşılamadı: $e')),
+      );
+    }
   }
 
   void _onSampleTick(Timer t) {
-    // Need all base sensors incl. linear acceleration
     if (_lastAcc == null ||
         _lastGyro == null ||
         _lastMag == null ||
@@ -230,34 +258,28 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
     final gyr = _lastGyro!;
     final mag = _lastMag!;
 
-    // Compute gravity = acc - userAcc (best effort)
     final gx = acc.x - uacc.x;
     final gy = acc.y - uacc.y;
     final gz = acc.z - uacc.z;
     _lastGravity = [gx, gy, gz];
 
-    // Compute orientation (yaw, pitch, roll) using acc & mag (tilt-compensated heading)
     final ax = acc.x, ay = acc.y, az = acc.z;
-    // Normalize accel
     final an = math.sqrt(ax * ax + ay * ay + az * az);
     final axn = an == 0 ? 0.0 : ax / an;
     final ayn = an == 0 ? 0.0 : ay / an;
     final azn = an == 0 ? 0.0 : az / an;
 
-    // Roll & pitch from accelerometer
     final roll = math.atan2(ayn, azn);
     final pitch = math.atan2(-axn, math.sqrt(ayn * ayn + azn * azn));
 
-    // Magnetometer tilt compensation
     final mx = mag.x, my = mag.y, mz = mag.z;
     final sinRoll = math.sin(roll), cosRoll = math.cos(roll);
     final sinPitch = math.sin(pitch), cosPitch = math.cos(pitch);
     final mx2 = mx * cosPitch + mz * sinPitch;
     final my2 =
         mx * sinRoll * sinPitch + my * cosRoll - mz * sinRoll * cosPitch;
-    final yaw = math.atan2(-my2, mx2); // azimuth
+    final yaw = math.atan2(-my2, mx2);
 
-    // Convert to degrees and wrap to [-180,180]
     double toDeg(num r) => r * 180.0 / math.pi;
     double wrap180(double d) {
       var x = d;
@@ -293,14 +315,13 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
       yawDeg.toStringAsFixed(3),
       pitchDeg.toStringAsFixed(3),
       rollDeg.toStringAsFixed(3),
-      '', // pressure_hpa (optional plugin to fill later)
+      '',
       _label.replaceAll(',', ' '),
     ].join(',');
 
     _sink!.writeln(row);
     _sampleIndex++;
 
-    // Keep UI live values fresh
     if (mounted &&
         _sampleIndex % (_selectedHz ~/ 2 == 0 ? 1 : _selectedHz ~/ 2) == 0) {
       setState(() {});
@@ -310,7 +331,7 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
   @override
   void dispose() {
     _sampler?.cancel();
-    _sink?.close(); // Ensure sink is closed on dispose
+    _sink?.close();
     _accSub?.cancel();
     _userAccSub?.cancel();
     _gyroSub?.cancel();
@@ -382,6 +403,23 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
                           icon: const Icon(Icons.stop),
                           label: const Text('Durdur'),
                         ),
+                        const SizedBox(width: 12),
+                        IconButton(
+                          icon: const Icon(Icons.share),
+                          tooltip: 'Son kaydı paylaş',
+                          onPressed:
+                              _lastRecordedFilePath != null && !_isRecording
+                                  ? _shareLastFile
+                                  : null,
+                          style: IconButton.styleFrom(
+                            backgroundColor: Theme.of(context)
+                                .colorScheme
+                                .secondaryContainer,
+                            foregroundColor: Theme.of(context)
+                                .colorScheme
+                                .onSecondaryContainer,
+                          ),
+                        ),
                       ],
                     ),
                     const SizedBox(height: 16),
@@ -432,8 +470,7 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
                     ),
                     const SizedBox(height: 12),
                     if (_csvFile != null)
-                      Text(
-                          'Dosya: ${_csvFile!.path.split('/').last}'), // Show only filename
+                      Text('Dosya: ${_csvFile!.path.split('/').last}'),
                     Text(
                       'Durum: ${_isRecording ? 'Kayıt yapılıyor ($_sampleIndex örneklem)' : 'Hazır'}',
                     ),
@@ -453,7 +490,7 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
 
 class _SensorCard extends StatelessWidget {
   final String title;
-  final List<double>? values; // x,y,z
+  final List<double>? values;
   const _SensorCard({required this.title, required this.values});
 
   @override
@@ -485,7 +522,7 @@ class _SensorCard extends StatelessWidget {
 }
 
 class _OrientCard extends StatelessWidget {
-  final List<double>? values; // yaw, pitch, roll (deg)
+  final List<double>? values;
   const _OrientCard({required this.values});
 
   @override
