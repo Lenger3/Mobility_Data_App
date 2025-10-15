@@ -1,5 +1,5 @@
-// UPDATED 2025-09-05
-// Saves CSV to an accessible folder named "Log_Data" on internal storage when possible.
+// UPDATED 2025-10-15
+// Saves CSV directly to file without windowing/buffering.
 // Sensors: accelerometer, gyroscope, magnetometer, linear accelerometer (userAcc), gravity (computed), orientation (pitch/roll/yaw computed).
 // Pressure column is included but left blank unless a pressure plugin is later added.
 // Falls back to app-specific directory if creating /storage/emulated/0/Log_Data fails.
@@ -23,7 +23,7 @@ class IMUApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Telemetry Collector v7',
+      title: 'Telemetry Collector v8 (Direct Write)',
       theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.blueGrey),
       home: const TelemetryHomePage(),
     );
@@ -41,16 +41,14 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
   // ===== Config =====
   final List<int> _hzOptions = const [5, 10, 20, 25, 50, 100];
   int _selectedHz = 20; // default 20 Hz
-  static const Duration _windowDuration = Duration(seconds: 10); // 10s window
 
   // ===== Sensor subscriptions =====
   StreamSubscription<AccelerometerEvent>? _accSub;
   StreamSubscription<UserAccelerometerEvent>?
-  _userAccSub; // linear acceleration
+      _userAccSub; // linear acceleration
   StreamSubscription<GyroscopeEvent>? _gyroSub;
   StreamSubscription<MagnetometerEvent>? _magSub;
   Timer? _sampler; // periodic sampler to enforce target Hz
-  Timer? _windowTimer; // flush window every 10s
 
   // ===== Last sensor readings =====
   AccelerometerEvent? _lastAcc; // includes gravity
@@ -66,15 +64,14 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
   bool _isRecording = false;
   String _label = "";
   DateTime? _sessionStart;
-  int _windowIndex = 0;
-  late List<String> _buffer; // in-memory CSV lines for current 10s window
+  int _sampleIndex = 0; // global sample index for the session
   File? _csvFile;
+  IOSink? _sink; // File sink for direct writing
   String? _fixedDirPath; // resolved save directory path
 
   @override
   void initState() {
     super.initState();
-    _buffer = <String>[];
     _attachRawStreams();
     _resolveSaveDirectory();
   }
@@ -169,15 +166,15 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
     // Prepare CSV file with timestamp & label in name
     final ts = DateTime.now().toIso8601String().replaceAll(':', '-');
     final safeLabel =
-        _label.trim().isEmpty
-            ? 'unlabeled'
-            : _label.trim().replaceAll(' ', '_');
+        _label.trim().isEmpty ? 'unlabeled' : _label.trim().replaceAll(' ', '_');
     final path = '$_fixedDirPath/telemetry_${safeLabel}_$ts.csv';
     _csvFile = File(path);
 
+    // Open a sink for writing
+    _sink = _csvFile!.openWrite(mode: FileMode.write);
+
     // Write header once
-    final header =
-        'timestamp_iso,session_ms,window_idx,sample_idx_in_window,'
+    final header = 'timestamp_iso,session_ms,sample_idx,'
         'acc_x,acc_y,acc_z,'
         'useracc_x,useracc_y,useracc_z,'
         'gravity_x,gravity_y,gravity_z,'
@@ -186,11 +183,10 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
         'yaw_deg,pitch_deg,roll_deg,'
         'pressure_hpa,'
         'label';
-    await _csvFile!.writeAsString('$header', mode: FileMode.write, flush: true);
+    _sink!.writeln(header);
 
-    _buffer.clear();
     _sessionStart = DateTime.now();
-    _windowIndex = 0;
+    _sampleIndex = 0;
 
     // Start sampler for target Hz
     final intervalMs = (1000 / _selectedHz).round();
@@ -199,9 +195,6 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
       _onSampleTick,
     );
 
-    // Start window timer to flush every 10 seconds
-    _windowTimer = Timer.periodic(_windowDuration, (_) => _flushWindow());
-
     setState(() => _isRecording = true);
   }
 
@@ -209,10 +202,11 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
     if (!_isRecording) return;
 
     _sampler?.cancel();
-    _windowTimer?.cancel();
 
-    // Flush remaining buffer (partial window)
-    await _flushWindow(force: true);
+    // Flush and close the file sink
+    await _sink?.flush();
+    await _sink?.close();
+    _sink = null;
 
     setState(() => _isRecording = false);
   }
@@ -222,15 +216,14 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
     if (_lastAcc == null ||
         _lastGyro == null ||
         _lastMag == null ||
-        _lastUserAcc == null) {
+        _lastUserAcc == null ||
+        _sink == null) {
       return;
     }
 
     final now = DateTime.now();
     final sessionMs =
-        _sessionStart == null
-            ? 0
-            : now.difference(_sessionStart!).inMilliseconds;
+        _sessionStart == null ? 0 : now.difference(_sessionStart!).inMilliseconds;
 
     final acc = _lastAcc!;
     final uacc = _lastUserAcc!;
@@ -278,13 +271,10 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
     final rollDeg = wrap180(toDeg(roll));
     _lastOrient = [yawDeg, pitchDeg, rollDeg];
 
-    final sampleIdx = _buffer.length; // index within current 10s window
-
     final row = [
       now.toIso8601String(),
       sessionMs,
-      _windowIndex,
-      sampleIdx,
+      _sampleIndex,
       acc.x.toStringAsFixed(6),
       acc.y.toStringAsFixed(6),
       acc.z.toStringAsFixed(6),
@@ -307,47 +297,20 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
       _label.replaceAll(',', ' '),
     ].join(',');
 
-    _buffer.add(row);
+    _sink!.writeln(row);
+    _sampleIndex++;
 
     // Keep UI live values fresh
     if (mounted &&
-        sampleIdx % (_selectedHz ~/ 2 == 0 ? 1 : _selectedHz ~/ 2) == 0) {
+        _sampleIndex % (_selectedHz ~/ 2 == 0 ? 1 : _selectedHz ~/ 2) == 0) {
       setState(() {});
-    }
-  }
-
-  Future<void> _flushWindow({bool force = false}) async {
-    if (_buffer.isEmpty || _csvFile == null) {
-      if (force) return; // nothing to flush
-      return;
-    }
-    // Append buffer to file and clear
-    final sink = _csvFile!.openWrite(mode: FileMode.append);
-    for (final line in _buffer) {
-      sink.writeln(line);
-    }
-    await sink.flush();
-    await sink.close();
-
-    _buffer.clear();
-    _windowIndex += 1;
-
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Window $_windowIndex yazıldı (${_csvFile!.path.split('/').last})',
-          ),
-          duration: const Duration(milliseconds: 900),
-        ),
-      );
     }
   }
 
   @override
   void dispose() {
     _sampler?.cancel();
-    _windowTimer?.cancel();
+    _sink?.close(); // Ensure sink is closed on dispose
     _accSub?.cancel();
     _userAccSub?.cancel();
     _gyroSub?.cancel();
@@ -378,19 +341,17 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
                         const SizedBox(width: 12),
                         DropdownButton<int>(
                           value: _selectedHz,
-                          items:
-                              _hzOptions
-                                  .map(
-                                    (h) => DropdownMenuItem<int>(
-                                      value: h,
-                                      child: Text('$h'),
-                                    ),
-                                  )
-                                  .toList(),
-                          onChanged:
-                              _isRecording
-                                  ? null
-                                  : (v) => setState(
+                          items: _hzOptions
+                              .map(
+                                (h) => DropdownMenuItem<int>(
+                                  value: h,
+                                  child: Text('$h'),
+                                ),
+                              )
+                              .toList(),
+                          onChanged: _isRecording
+                              ? null
+                              : (v) => setState(
                                     () => _selectedHz = v ?? _selectedHz,
                                   ),
                         ),
@@ -430,57 +391,54 @@ class _TelemetryHomePageState extends State<TelemetryHomePage> {
                       children: [
                         _SensorCard(
                           title: 'Accelerometer (m/s²)',
-                          values:
-                              _lastAcc == null
-                                  ? null
-                                  : [_lastAcc!.x, _lastAcc!.y, _lastAcc!.z],
+                          values: _lastAcc == null
+                              ? null
+                              : [_lastAcc!.x, _lastAcc!.y, _lastAcc!.z],
                         ),
                         _SensorCard(
                           title: 'Linear Acc (m/s²)',
-                          values:
-                              _lastUserAcc == null
-                                  ? null
-                                  : [
-                                    _lastUserAcc!.x,
-                                    _lastUserAcc!.y,
-                                    _lastUserAcc!.z,
-                                  ],
+                          values: _lastUserAcc == null
+                              ? null
+                              : [
+                                  _lastUserAcc!.x,
+                                  _lastUserAcc!.y,
+                                  _lastUserAcc!.z,
+                                ],
                         ),
                         _SensorCard(
                           title: 'Gravity (m/s²)',
-                          values:
-                              _lastGravity == null
-                                  ? null
-                                  : [
-                                    _lastGravity![0],
-                                    _lastGravity![1],
-                                    _lastGravity![2],
-                                  ],
+                          values: _lastGravity == null
+                              ? null
+                              : [
+                                  _lastGravity![0],
+                                  _lastGravity![1],
+                                  _lastGravity![2],
+                                ],
                         ),
                         _SensorCard(
                           title: 'Gyroscope (rad/s)',
-                          values:
-                              _lastGyro == null
-                                  ? null
-                                  : [_lastGyro!.x, _lastGyro!.y, _lastGyro!.z],
+                          values: _lastGyro == null
+                              ? null
+                              : [_lastGyro!.x, _lastGyro!.y, _lastGyro!.z],
                         ),
                         _SensorCard(
                           title: 'Magnetometer (µT)',
-                          values:
-                              _lastMag == null
-                                  ? null
-                                  : [_lastMag!.x, _lastMag!.y, _lastMag!.z],
+                          values: _lastMag == null
+                              ? null
+                              : [_lastMag!.x, _lastMag!.y, _lastMag!.z],
                         ),
                         _OrientCard(values: _lastOrient),
                       ],
                     ),
                     const SizedBox(height: 12),
-                    if (_csvFile != null) Text('Dosya: ${_csvFile!.path}'),
+                    if (_csvFile != null)
+                      Text(
+                          'Dosya: ${_csvFile!.path.split('/').last}'), // Show only filename
                     Text(
-                      'Durum: ${_isRecording ? 'Kayıt yapılıyor' : 'Hazır'}',
+                      'Durum: ${_isRecording ? 'Kayıt yapılıyor ($_sampleIndex örneklem)' : 'Hazır'}',
                     ),
                     Text(
-                      'Pencere: 10 saniye  •  Seans başlangıcı: ${_sessionStart?.toIso8601String() ?? '-'}',
+                      'Seans başlangıcı: ${_sessionStart?.toIso8601String() ?? '-'}',
                     ),
                   ],
                 ),
@@ -514,8 +472,8 @@ class _SensorCard extends StatelessWidget {
               Text(
                 values == null
                     ? '—'
-                    : 'x: ${values![0].toStringAsFixed(4)}'
-                        'y: ${values![1].toStringAsFixed(4)}'
+                    : 'x: ${values![0].toStringAsFixed(4)}\n'
+                        'y: ${values![1].toStringAsFixed(4)}\n'
                         'z: ${values![2].toStringAsFixed(4)}',
               ),
             ],
@@ -549,8 +507,8 @@ class _OrientCard extends StatelessWidget {
               Text(
                 values == null
                     ? '—'
-                    : 'yaw: ${values![0].toStringAsFixed(1)}'
-                        'pitch: ${values![1].toStringAsFixed(1)}'
+                    : 'yaw: ${values![0].toStringAsFixed(1)}\n'
+                        'pitch: ${values![1].toStringAsFixed(1)}\n'
                         'roll: ${values![2].toStringAsFixed(1)}',
               ),
             ],
