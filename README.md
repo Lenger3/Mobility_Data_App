@@ -1,6 +1,12 @@
+<<<<<<< HEAD
 # How to Use the App
 
 Data_Banana is a Flutter application that collects mobility data using the device's Inertial Measurement Unit (IMU) sensors for activity classification (e.g., walking, running, standing, etc.).
+=======
+# application_1
+!!!!!!!!!!!!Error1 => Label size!!!!!!!!!!!
+A new Flutter project.
+>>>>>>> feb2d39 (Fixed)
 
 Below is a step-by-step guide on how to use the application. You can insert your own screenshots in the indicated places.
 
