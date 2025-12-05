@@ -1,6 +1,6 @@
-# application_1
+# Data_Banana
 
-A new Flutter project.
+A new Flutter project. This project collect data for about mobility classification. Which use Inertial Measurement Unit (IMUs).
 
 ## Getting Started
 
