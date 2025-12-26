@@ -1,37 +1,39 @@
 # How to Use the App
 
-Data_Banana is a Flutter application that collects mobility data using the device's Inertial Measurement Unit (IMU) sensors for activity classification (e.g., walking, running, standing, etc.).
+Telemetry Collector is a Flutter application that collects real-time sensor data from your device's Inertial Measurement Unit (IMU) for mobility and transportation mode classification (e.g., walking, bus, car, train, etc.).
 
-Below is a step-by-step guide on how to use the application. You can insert your own screenshots in the indicated places.
+Below is a step-by-step guide on how to use the application.
 
-### Step 1: Install and Launch the App
-After installing the app, open it. You will see a welcome or home screen that briefly explains the purpose of the app.
+### Step 1: Launch the App and View the Main Screen
+Open the app. The main screen displays the save path, sampling frequency dropdown, label input field, and Start/Stop controls. Real-time sensor readings are shown below.
 
-![Screenshot of the welcome/launch screen](path/to/your/screenshot1.png)
+<img src="images/1.png" alt="Main screen when idle (Start active)" width="300" />
 
-### Step 2: Grant Required Permissions
-The app needs access to motion sensors (and possibly location for better accuracy). Allow the requested permissions when prompted.
+### Step 2: Select Sampling Frequency
+Tap the dropdown next to "Örnekleme (Hz):" to choose your desired sampling rate (e.g., 5, 10, 20, 25, 50, or 100 Hz). Higher rates provide more detailed data but use more storage.
 
-![Screenshot of permission request](path/to/your/screenshot2.png)
+<img src="images/3.png" alt="Selecting sampling frequency from dropdown" width="300" />
 
-### Step 3: Navigate to the Main Screen and Start Data Collection
-On the main screen, tap the "Start" or "Begin Recording" button to start collecting data from the IMU sensors (accelerometer, gyroscope, etc.).
+### Step 3: Enter an Activity Label
+In the "Etiket (örn. car/bus/train/...)" text field, type a descriptive label for the activity you are about to record (e.g., "Bus", "Walking", "Car").
 
-![Screenshot of the main screen with Start button](path/to/your/screenshot3.png)
+<img src="images/2.png" alt="Entering 'Bus' as the activity label" width="300" />
 
-### Step 4: Perform Activities While Recording
-While the recording is active, perform your normal daily activities (walking, running, climbing stairs, etc.). You may see real-time sensor readings or activity indicators on the screen.
+### Step 4: Start Data Collection
+Tap the "Başlat" (Start) button. It will turn blue and become active while "Durdur" (Stop) becomes enabled. Sensor values will begin updating in real time.
 
-![Screenshot during active data collection](path/to/your/screenshot4.png)
+<img src="images/4s.png" alt="App during active recording (Stop button active)" width="300" />
 
-### Step 5: Stop Recording and View Results
-When finished, tap the "Stop" button. The app will process the collected data and display the mobility classification results (e.g., duration of each detected activity).
+### Step 5: Perform the Activity
+While recording, carry your phone as you normally would during the labeled activity (e.g., hold it while riding a bus). The app displays live readings for Accelerometer, Linear Acceleration, Gravity, Gyroscope, Magnetometer, and Orientation.
 
-![Screenshot of results/classification screen](path/to/your/screenshot5.png)
+*(Use any of the recording screenshots here – they all show live data updates)*
 
-### Step 6: Save or Export Data (Optional)
-Depending on the app version, you may have options to save the recorded data locally or export it for further analysis.
+<img src="images/4.png" alt="Live sensor readings during recording" width="300" />
 
-![Screenshot of save/export options (if available)](path/to/your/screenshot6.png)
+### Step 6: Stop Recording and Share the File
+When finished, tap the "Durdur" (Stop) button. The app automatically saves the data as a CSV file named like `telemetry_[Label]_[Timestamp].csv` and opens the Android share sheet so you can send or save the file (e.g., via Gmail, Drive, etc.).
 
-Feel free to adjust the number of steps or descriptions based on your actual app flow. Replace the `path/to/your/screenshotX.png` placeholders with the actual file paths or URLs of your screenshots (e.g., upload them to an `images/` folder in your repository and use relative paths like `images/step1.png`).
+<img src="images/5.png" alt="Share sheet after stopping recording" width="300" />
+
+Feel free to repeat
