@@ -1,16 +1,37 @@
-# Data_Banana
+# How to Use the App
 
-A new Flutter project. This project collect data for about mobility classification. Which use Inertial Measurement Unit (IMUs).
+Data_Banana is a Flutter application that collects mobility data using the device's Inertial Measurement Unit (IMU) sensors for activity classification (e.g., walking, running, standing, etc.).
 
-## Getting Started
+Below is a step-by-step guide on how to use the application. You can insert your own screenshots in the indicated places.
 
-This project is a starting point for a Flutter application.
+### Step 1: Install and Launch the App
+After installing the app, open it. You will see a home screen those text box, sampling rate box and data information box.
 
-A few resources to get you started if this is your first Flutter project:
+![Screenshot of the welcome/launch screen](path/to/your/screenshot1.png)
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+### Step 2: Grant Required Permissions
+The app needs access to motion sensors (and possibly location for better accuracy). Allow the requested permissions when prompted.
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+![Screenshot of permission request](path/to/your/screenshot2.png)
+
+### Step 3: Navigate to the Main Screen and Start Data Collection
+On the main screen, tap the "Start" or "Begin Recording" button to start collecting data from the IMU sensors (accelerometer, gyroscope, etc.).
+
+![Screenshot of the main screen with Start button](path/to/your/screenshot3.png)
+
+### Step 4: Perform Activities While Recording
+While the recording is active, perform your normal daily activities (walking, running, climbing stairs, etc.). You may see real-time sensor readings or activity indicators on the screen.
+
+![Screenshot during active data collection](path/to/your/screenshot4.png)
+
+### Step 5: Stop Recording and View Results
+When finished, tap the "Stop" button. The app will process the collected data and display the mobility classification results (e.g., duration of each detected activity).
+
+![Screenshot of results/classification screen](path/to/your/screenshot5.png)
+
+### Step 6: Save or Export Data (Optional)
+Depending on the app version, you may have options to save the recorded data locally or export it for further analysis.
+
+![Screenshot of save/export options (if available)](path/to/your/screenshot6.png)
+
+Feel free to adjust the number of steps or descriptions based on your actual app flow. Replace the `path/to/your/screenshotX.png` placeholders with the actual file paths or URLs of your screenshots (e.g., upload them to an `images/` folder in your repository and use relative paths like `images/step1.png`).
