@@ -27,8 +27,6 @@ Tap the "Başlat" (Start) button. It will turn blue and become active while "Dur
 ### Step 5: Perform the Activity
 While recording, carry your phone as you normally would during the labeled activity (e.g., hold it while riding a bus). The app displays live readings for Accelerometer, Linear Acceleration, Gravity, Gyroscope, Magnetometer, and Orientation.
 
-*(Use any of the recording screenshots here – they all show live data updates)*
-
 <img src="images/4.png" alt="Live sensor readings during recording" width="300" />
 
 ### Step 6: Stop Recording and Share the File
